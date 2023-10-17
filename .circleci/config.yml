@@ -408,8 +408,8 @@ jobs:
             else
               return 1
             fi
-      # - revert-migrations
-      # - destroy-environment 
+      - revert-migrations
+      - destroy-environment 
 
   cloudfront-update:
     docker:
@@ -455,24 +455,63 @@ jobs:
       - revert-migrations
       - destroy-environment 
 
-# cleanup:
-#     docker:
-#       # Docker image here
-#     steps:
-#       # Checkout code from git
-#       - run:
-#           name: Get old stack workflow id
-#           command: |
-#             # your code here
-#             export OldWorkflowID="the id here"
-#             export STACKS=[] #put the list of stacks here
-#       - run:
-#           name: Remove old stacks and files
-#           command: |
-#             if [[ "${STACKS[@]}" =~ "${OldWorkflowID}" ]]
-#             then
-#               # your code here
-#             fi
+  configure-prometheus:
+    docker:
+      - image: python:3.7-alpine3.16
+    steps:
+      - checkout
+      - add_ssh_keys:
+          fingerprints: ["47:33:54:9d:19:41:9c:7b:02:b0:2e:eb:85:4f:cf:66"]
+      - run:
+          name: Install dependencies
+          command: |
+            apk add --update aws-cli
+            apk add --update tar
+            apk add --update gzip
+            apk add --update ansible
+            apk add --update nodejs
+            apk add --update npm
+            apk add --update curl
+      - attach_workspace:
+          at: ~/
+      - run:
+          name: Setup Prometheus Node Exporter
+          command: |
+            cd .circleci/ansible
+            cat inventory.txt
+            ansible-playbook -i inventory.txt node-exporter.yml
+      - destroy-environment:
+          workflow_id: ${CIRCLE_WORKFLOW_ID:0:7}
+      - revert-migrations:
+          workflow_id: ${CIRCLE_WORKFLOW_ID:0:7}
+
+
+  cleanup:
+    docker:
+      - image: python:3.7-alpine3.11
+        auth:
+          username: $DOCKERHUB_USERNAME
+          password: $DOCKERHUB_PASSWORD
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/
+      - run:
+          name: Install dependencies
+          command: |
+            pip install awscli
+      - run:
+          name: Remove old stacks and files
+          command: |
+            export OLD_WORKFLOW_ID=$(cat ~/textfile.txt)
+            echo "OLD_WORKFLOW_ID::: $OLD_WORKFLOW_ID"
+            if [[ ! -z "${OLD_WORKFLOW_ID}" && "${CIRCLE_WORKFLOW_ID:0:7}" != "${OLD_WORKFLOW_ID}" ]]; then
+                aws s3 rm "s3://udapeople-${OLD_WORKFLOW_ID}" --recursive
+                aws cloudformation delete-stack --stack-name "udapeople-backend-${OLD_WORKFLOW_ID}"
+                aws cloudformation delete-stack --stack-name "udapeople-frontend-${OLD_WORKFLOW_ID}"
+            else
+                echo 'Cannot cleanup'
+            fi
             
 
 workflows:
@@ -493,8 +532,10 @@ workflows:
           filters:
             branches:
               only: [master]
-      - configure-infrastructure:
+      - configure-prometheus:
           requires: [deploy-infrastructure]
+      - configure-infrastructure:
+          requires: [configure-prometheus]
       - run-migrations:
           requires: [configure-infrastructure]
       - deploy-frontend:
@@ -505,5 +546,5 @@ workflows:
           requires: [deploy-backend, deploy-frontend]
       - cloudfront-update:
           requires: [smoke-test]
-      # - cleanup:
-      #     requires: [cloudfront-update]
+      - cleanup:
+          requires: [cloudfront-update, configure-prometheus]
